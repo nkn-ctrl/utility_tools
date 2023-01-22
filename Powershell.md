@@ -5,6 +5,7 @@ PowerShell では以下の方法で行数や文字数をカウントする事が
 - [Measure-Object](http://technet.microsoft.com/ja-jp/library/hh849965.aspx) コマンドレットを使用する
 - Count プロパティ又は Length プロパティを使用する
 <br>
+
 ```
 PS C:\Users\Administrator> $log = Get-Content C:\Windows\WindowsUpdate.log
 PS C:\Users\Administrator> $log | Measure-Object -Line -Character -Word | Format-List Lines,Words,Characters
