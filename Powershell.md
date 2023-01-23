@@ -29,6 +29,39 @@ PS C:\Users\Administrator> $log.Count
 PS C:\Users\Administrator> $log.Length
 10548
 ```
+<br>
+
+[出力を整える](https://www.vwnet.jp/windows/PowerShell/2018060501/GettingStartedWithPowerShell-03.htm)  
+- Format-Table(ft)  指定したプロパティをテーブル表示  
+```
+PS C:\Users\airt002> Get-ChildItem C:\Windows\System32\drivers\etc\ | Format-Table FullName, LastWriteTime, Length -AutoSize
+
+FullName                                    LastWriteTime         Length
+--------                                    -------------         ------
+C:\Windows\System32\drivers\etc\hosts       8/8/2022 11:53:08 AM    1056
+C:\Windows\System32\drivers\etc\hosts.ics   1/16/2023 11:50:20 AM    443
+C:\Windows\System32\drivers\etc\lmhosts.sam 12/7/2019 6:12:44 PM    3683
+C:\Windows\System32\drivers\etc\networks    7/10/2015 8:02:42 PM     407
+```
+<br>
+
+-  Format-List(fl)  指定したプロパティをリスト表示  
+```
+PS C:\Users\airt002> Get-ChildItem C:\Windows\System32\drivers\etc\ | Format-List FullName, LastWriteTime, Length
+
+
+FullName      : C:\Windows\System32\drivers\etc\hosts
+LastWriteTime : 8/8/2022 11:53:08 AM
+Length        : 1056
+
+FullName      : C:\Windows\System32\drivers\etc\hosts.ics
+LastWriteTime : 1/16/2023 11:50:20 AM
+Length        : 443
+```
+<br>
+
+- 
+
 
 
 
