@@ -1,0 +1,215 @@
+## 自動ラベリング機能
+#### 概要
+- Velociraptor_Agentが接続された際に自動的にAgentを判断してタグを付与する機能
+- 付与するタグ
+  - `Windows` or `Linux`
+  - `Server` or `Workstation` or `Domain Controller`
+  - `hostname`
+#### 設定要領
+1. Artifact追加
+- AutomateServerLabels
+```
+name: AutomateServerLabels
+type: SERVER_EVENT
+sources:
+- query: |
+    LET interrogations = SELECT *
+    FROM watch_monitoring(artifact="System.Flow.Completion")
+    WHERE Flow.artifacts_with_results =~ "Generic.Client.Info/BasicInformation"
+
+    LET results = SELECT *, ClientId
+    FROM source(
+       artifact="Generic.Client.Info/BasicInformation" ,
+       client_id=ClientId, flow_id=FlowId)
+    WHERE Platform =~ "Windows"
+
+    SELECT *
+    label(client_id=ClientId, labels="Windows", op="set")
+    FROM foreach(row=interrogations, query=results)
+```
+- Hostname.AutomateServerLabels
+```
+name: Hostname.AutomateServerLabels
+type: SERVER_EVENT
+sources:
+- query: |
+    LET interrogations = SELECT *
+    FROM watch_monitoring(artifact="System.Flow.Completion")
+    WHERE Flow.artifacts_with_results =~ "Generic.Client.Info/BasicInformation"
+
+    LET results = SELECT Hostname,ClientId
+    FROM source(
+       artifact="Generic.Client.Info/BasicInformation" ,
+       client_id=ClientId, flow_id=FlowId)
+
+    SELECT *
+    label(client_id=ClientId, labels=Hostname, op="set")
+    FROM foreach(row=interrogations, query=results)
+```
+2. Artifact設定
+- Server Eventsを選択
+- Update server monitringから以下を選択し**Launch**
+  - `Server.Monitor.Autolabeling.Clients`
+  - `AutomateServerLabels`  
+  - `Hostname.AutomateServerLabels`
+#### 備考
+- Artifactの設定前にAgentを接続していた場合は、`Generic.Client.Info`をたたくことでタグが設定される。
+
+
+## リアルタイムモニタリング機能(Network Connection)
+#### 概要
+- Client Monitoring機能を利用して継続監視を行い、Mattermostによる通知を行う。
+- 本機能は機能検証及び施策のため今後必要なリアルタイミング機能を検討していきたい。
+  - ※　リアルタイムモニタリングは対象環境に負荷はかかるため監視間隔も今後検討  
+#### 設定要領
+1. MatterMost_Webhookの設定
+  - [Gitlab - Mattermost Webhook 設定 （BOT設定）](https://gitlab.jade1.net/o-team/ops5/-/issues/474#note_3266075)を参考に準備
+2. MatterMost_Webhookの点検
+  - NoteBookを利用して点検
+    ```
+    SELECT * FROM http_client(
+        data=serialize(item=dict(text="This is Test1234"), format="json"),
+        headers=dict(`Content-Type`="application/json"),
+        method="POST",
+        url="http://192.168.10.55:8065/hooks/ektg6ikqqtrq3fhkpcd4ty3giy")
+    ```
+3. Client_Event_Artifact
+```
+name: Custum.TrackNetwork.Mattermost
+author: Velo@N@k@mura
+description: |
+   This artifact is Cient Event.
+   This artifact's function is Real time conection monitoring and send to mattermost Sv.
+   N@k@mura is so cute.
+
+type: CLIENT_EVENT
+
+parameters:
+   - name: Period
+     default: 5
+     type: int
+     description: how many seconds the artifact waits between checking network connections for changes
+
+sources:
+    - query: |
+        LET NetworkConnections = SELECT *, format(format="%v %v %v %v %v %v %v", args=[Pid, Family, Type, Laddr.IP, Laddr.Port, Raddr.IP, Raddr.Port]) AS DiffKey FROM netstat()
+      
+        LET EventQuery = SELECT * FROM diff(query=NetworkConnections, period=Period, key="DiffKey")
+      
+        SELECT *, process_tracker_get(id=Pid) AS ProcInfo ,
+            { SELECT * FROM http_client(
+                  data=serialize(item=dict(
+                        text=format(format="## New Network Connection!! \n **Time:** %v ,**Source IP/Port:** %v **Distination IP/Port:** %v ",
+                                    args=[Timestamp,Laddr,Raddr])),
+                        format="json") ,
+                  headers=dict(`Content-Type`="application/json"),
+                  method="POST",
+                  url="http://192.168.10.55:8065/hooks/ektg6ikqqtrq3fhkpcd4ty3giy")
+            } as Mattermost
+        FROM EventQuery
+        WHERE Family = 2 and TypeString = "TCP" and Diff = "added"
+```
+
+## Velociraptor・sysmon連携
+#### 概要
+- Elastic_Agentをinstallできない環境の場合にVelociraptor_Agentを使用してsysmonの出力を確認する。
+  - Export-config.yaml等の設定及びsysmonのinstallも含めてVelociraptor_Agentで行う。
+- Process Createのみを通知する要領とsysmonイベント（export-config.yamlによる設定後の出力）全てを確認する要領がある。
+#### 設定要領
+###### Process Createのみを通知する場合
+1. Client_Event `Windows.Detection.ProcessCreation`を選択
+  - Select Artifact -> Tools
+    - Select fileを選択しSysmonBinary又は、Sysmon configを選択
+    - Serve from upstreamを設定しServe URLがVelociraptor ServerのURLになっていることを確認
+    - ※ SysmonBinary又は、Sysmon configともに実施
+2. Server_Event `Custom.Server.Alerts.ProcessCreation`を設定
+```
+name: Custom.Server.Alerts.ProcessCreation
+description: |
+   This artifact alerts when a process was detected with the artifact 'Windows.Detection.ProcessCreation' (which is a client_event artifact that needs to be enabled first).
+
+author: Velo@N@k@mura
+
+type: SERVER_EVENT
+
+parameters:
+  - name: SlackToken
+    description: The token URL obtained from Mattermost/Slack/Teams/Discord 
+
+sources:
+  - query: |
+        LET token_url = if(
+           condition=SlackToken,
+           then=SlackToken,
+           else=server_metadata().SlackToken)
+
+        LET hits = SELECT * from watch_monitoring(artifact='Windows.Detection.ProcessCreation')
+
+        SELECT * FROM foreach(row=hits,
+        query={
+           SELECT EventData.CommandLine, EventData, Hostname, ClientId, Url, Content, Response FROM http_client(
+            data=serialize(item=dict(
+                text=format(format="## New Process by sysmon \n **Time:** '%v' **Hostname:** %v **CommandLine:** %v ",
+                            args=[Timestamp, Hostname , EventData.CommandLine])),
+                format="json"),
+            headers=dict(`Content-Type`="application/json"),
+            method="POST",
+            url=token_url)
+          WHERE EventData.IntegrityLevel = "High"     
+        })
+
+```
+###### sysmonイベント全てを確認する要領
+1. Client_Event `Windows.Sysinternals.SysmonLogForward`を設定
+  - 要領は`Windows.Detection.ProcessCreation`と同様
+
+###### Tips
+- 攻撃の特徴が明確化した場合は、Mattermostで強調表示すると発見が容易になる。
+  - setting
+    ```
+    /setting
+    ```  
+    - Words That Trigger Mentionsに強調表示したいキーワードを追加
+      - 一例
+        ```
+        whoami,ping
+        ``` 
+
+## GitLab表示拡張BookMarklet
+#### 概要
+- レビュー等を行う際にGitlabの表示を見やすくするためにBookMarkletを使用して表示率を変更する。
+#### 設定要領
+1. `ブックマーク` -> `ブックマークを管理` -> `新しいブックマークを追加`
+2. URLに以下のBookmarkletを追加し登録
+- 90%表示
+  ```
+  javascript:(function(){var targetDiv1 = document.getElementsByClassName("container-fluid container-limited limit-container-width project-highlight-puc"); targetDiv1[0].style.setProperty('max-width','90%');var targetDiv2 = document.getElementsByClassName("detail-page-description content-block js-detail-page-description gl-pt-3 gl-pb-0 gl-border-none"); targetDiv2[0].style.setProperty('max-width','90%')})()
+  ```
+- Wikiの右側削除
+  ```
+  javascript:(function(){var targetDiv = document.getElementsByClassName("right-sidebar right-sidebar-expanded wiki-sidebar js-wiki-sidebar js-right-sidebar")[0];targetDiv.style.display="none";var main = document.getElementsByClassName("content-wrapper content-wrapper-margin");main[0].style.paddingRight="0px";})()
+  ```
+
+#### 今後のアイディア
+- sysmonのイベントをそのままKibanaに出力する。
+  - Elastic_Agentをinstallできない場合にsysmonの出力をKibanaに出力し確認する。
+  - 使用するArtifact：`Elastic.EventLogs.Sysmon`
+  - イメージ
+    - 従来
+      ```mermaid
+      graph LR;
+
+      A[sysmon] --> B[Elastic_Agent]
+      B --> C[Kibana]
+
+
+
+    - アイディア
+    
+      ```mermaid
+      graph LR;
+
+      A[sysmon] --> B[Velociraptor_Agent]
+      B --> C[Velociraptor_Server]
+      C --> D[Kibana]
+      C --> E[Mattermost]

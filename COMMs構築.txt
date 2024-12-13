@@ -1,0 +1,3756 @@
+## COMMs構築(Gitlab, Mattermost)
+- docker-compose.yml
+```yml
+version: "3"
+services:
+  web:
+    image: gitlab/gitlab-ee:latest
+    volumes:
+      - "gitlab_config:/etc/gitlab"
+      - "gitlab_logs:/var/log/gitlab"
+      - "gitlab_data:/var/opt/gitlab"
+    restart: always
+    ports:
+      - "3100:3100"
+      - "8001:8001"
+    hostname: '192.168.10.70'
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://192.168.10.70:3100'
+        mattermost_external_url 'http://192.168.10.70:8001'
+    shm_size: '256m'
+volumes:
+  gitlab_config: {}
+  gitlab_logs: {}
+  gitlab_data: {}
+```
+
+- 補足
+  - root初期パスワード
+    - コンテナ内の`/etc/gitlab/initial_root_password`に記載
+    - Gitlab URL: `external_url`の値
+    - Mattermost URL: `mattermost_external_url`の値
+
+
+## Gitlab - Drawio 連携（Repository保存）
+### Gitlab側の設定
+1. 管理者ログイン
+2. `Admin area` -> `Applications`
+  - `http://[Gitlab Host]/admin/applications` 
+3. "Add new application"
+  - Name: 任意 
+  - Redirect URI: `http://[drawio Host]/gitlab`
+  - Scopes: `api`, `read_repository`, `write_repository`
+4. 作成すると`Application ID`と`Secret`が発行されるので記録
+
+### Drawio側の設定(`docker-compose.yml`)
+```
+version: "3"
+services:
+  drawio:
+    image: jgraph/drawio:latest
+    ports:
+      - "3300:8080"
+    environment:
+      - DRAWIO_GITLAB_URL=http://[Gitlab Host]
+      - DRAWIO_GITLAB_ID=[Application ID]
+      - DRAWIO_GITLAB_SECRET=[Secret]
+      - DRAWIO_SERVER_URL=http://[Drawio Host]/
+      - DRAWIO_USE_HTTP=1
+    command: bash -c "echo 'window.ALLOW_CUSTOM_PLUGINS = true' >> /usr/local/tomcat/webapps/draw/js/PreConfig.js && sed -i \"s/script-src \\\\\\'self\\\\\\'/script-src \\\\\\'self\\\\\\' */\" /usr/local/tomcat/webapps/draw/js/PreConfig.js  && catalina.sh run"
+    restart: always
+```
+
+
+## Gitlab - Mattermost Webhook 設定 （BOT設定）
+- Webhook設定することでGitlabの以下の操作が行われた場合にMattermostにて通知を受け取ることが可能
+  - issueの作成
+  - コメントの挿入
+  - wikiの作成
+  - repositoryへのpush
+    - 共有ファイルの保存
+    - NW図等のdrawioの作成または更新（GitlabとDrawioを連携していた場合）
+- LeaderやTech-Leaderが当該Mattermostのチャンネルを監視することで、チームでの作業状況について早期に把握可能
+
+### Mattermost側の設定
+1. 管理者ログイン
+2. 通知を受け取るチャンネル作成
+3. 左上のアイコンをクリック -> Integrations
+4. Incomming Webhooks
+5. Add Incoming Webhook
+  - Title: 任意
+  - Description: 任意
+  - Channel: 作成したチャンネルを選択
+6. WebhookのURLが発行されるので記録
+
+### Gitlab側の設定
+#### 初回のみ
+1. 管理者ログイン
+2. Admin area -> Settings -> Network
+  - `http://[Giglab Host]/admin/application_settings/network`
+3. Outbound requests
+4. "Allow requests to the local network from webhooks and integrations"にチェック
+5. Save changes
+
+#### プロジェクト単位
+1. Mattermostに通知を出したいプロジェクトを選択
+2. Settings -> Integrations
+3. Mattermost notifications
+  - Trigger: 任意（以下を推奨）
+    - `A push is made to the repository`
+    - `An issue is created, closed, or reopened`
+    - `A comment is added`
+    - `A wiki page is created or updated`
+  - Webhook: MattermostでWebhookを作成した際に発行された`Webhook URL`を入力
+
+
+## ネットワーク図一括描画(Drawio)
+- 本記載の内容は最低限のコードサンプルであり、そのまま運用で使えるものではない
+- ネットワーク図作成においての要領（使用ツール、順番等）や描画イメージ（レイアウト、ホストの単位（IP単位or物理的なホスト単位）等）の確立後、当該要領に合わせてコードをチューニングする必要がある
+- ３つのやり方を紹介するがそれぞれに特性があるため、要領にマッチしたやり方を選択しチューニングすることを推奨する
+
+### CSVインポート
+- プログラミング知識は不要のため比較的扱いやすい
+  - ただ、Drawio特有のCSVインポートの仕組み・変数の定義・スタイルの定義等を把握する必要がある
+- インポートのみ対応のため、アップデート系の要領には不向き
+  - 一度全削除し、全登録するような要領となる
+
+#### CSVインポートサンプル
+```
+## Netmap
+# labels: { \
+#    "nw": "%Hostname%<br><i style=color:gray;>%IP%</i>", \
+#    "ws": "%Hostname%<br><i style=color:gray;>%IP%</i>", \
+#    "sv": "%Hostname%<br><i style=color:gray;>%IP%</i>", \
+#    "offered_ws": "%Hostname%<br><i style=color:gray;>%IP%</i>", \
+#    "offered_sv": "%Hostname%<br><i style=color:gray;>%IP%</i>", \
+#    "rt": "%Hostname%<br><i style=color:gray;>%IP%</i>", \
+#    "fw": "%Hostname%<br><i style=color:gray;>%IP%</i>", \
+#    "": "%Hostname%<br><i style=color:gray;>%IP%</i>" \
+# }
+# labelname: Type
+# styles: { \
+# "nw":"sketch=0;html=1;aspect=fixed;strokeColor=none;shadow=0;align=center;verticalAlign=top;fillColor=lightblue;shape=mxgraph.gcp2.network", \
+# "sv":"outlineConnect=0;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;shape=mxgraph.aws3.traditional_server;fillColor=#7D7C7C;gradientColor=none;", \
+# "offered_sv":"outlineConnect=0;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;shape=mxgraph.aws3.traditional_server;fillColor=#ffcc99;strokeColor=#36393d;", \
+# "ws":"sketch=0;pointerEvents=1;shadow=0;dashed=0;html=1;strokeColor=none;fillColor=#505050;labelPosition=center;verticalLabelPosition=bottom;verticalAlign=top;outlineConnect=0;align=center;shape=mxgraph.office.devices.lcd_monitor;", \
+# "offered_ws":"sketch=0;pointerEvents=1;shadow=0;dashed=0;html=1;strokeColor=#36393d;fillColor=#ffcc99;labelPosition=center;verticalLabelPosition=bottom;verticalAlign=top;outlineConnect=0;align=center;shape=mxgraph.office.devices.lcd_monitor;strokeColor=#36393d;", \
+# "rt":"verticalLabelPosition=bottom;sketch=0;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;align=center;outlineConnect=0;shape=mxgraph.citrix.router;", \
+# "fw":"verticalLabelPosition=bottom;sketch=0;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;align=center;outlineConnect=0;shape=mxgraph.citrix.firewall;" \
+# }
+# stylename: Type
+# identity: Entry
+# namespace: csvimport-
+# 
+# connect: {"from": "Connected", "to": "Entry", "style": "rounded=0;fontSize=11;endArrow=none;endFill=0;jumpStyle=sharp;"}
+# width: 60
+# height: auto
+# padding: 10
+## ignore: Entry,VLAN,IP,Hostname,Type,User,On diagram,Velociraptor,Fleet,Connected
+# ignore: OpenPort
+## nodespacing: 60
+## levelspacing: 60
+## edgespacing: 60
+# spacing: 60
+# layout: organic
+###  CSV below this line. First line are column names. 
+Entry,Domain,VLAN,IP,OpenPort,IPv6,Hostname,OS,Type,User,On diagram,Velociraptor,Fleet,Connected
+1,,,172.28.0.0/30,,,eng-edge-router-to-siteb-firewall,,nw,,exist,,,
+3,,,172.30.5.1<br>172.30.2.1<br>172.30.0.10,22,,hq-admin-router,,rt,,exist,,,"31,30"
+7,,,172.29.0.0/30,,,Prod-edge-router-to-prod-firewall,,nw,,exist,,,
+8,,,172.29.0.5<br>172.29.0.2,22,,prod-firewall,,fw,,exist,,,142
+13,prod.pnpower.lan,,172.29.2.0/24,,,prod-Servers,,nw,,exist,,,
+24,,,172.30.0.254,,,fak-firewall,,fw,,exist,,,25
+25,,,172.30.0.253<br>172.30.0.9,,,Hq-core-router,,rt,,exist,,,3
+28,pnpower.lan,,172.30.3.0/24,,,,,nw,,not exist,,,
+29,pnpower.lan,,172.30.4.0/24,,,,,nw,,not exist,,,
+30,pnpower.lan,,172.30.2.0/24,,,hq-Servers,,nw,,exist,,,3
+31,pnpower.lan,,172.30.5.0/24,,,hq-IT,,nw,,exist,,,
+33,,,172.30.1.0/24,,,,,nw,,not exist,,,
+34,,,172.30.0.0/30,,,hq-edge-router-to-hq-firewall,,nw,,exist,,,34
+35,pnpower.lan,,172.30.5.3,"22,5601",,es-siem,Linux,sc,,exist,,Fleet,31
+36,pnpower.lan,,172.30.5.2,"80,135,139,443,445,5985,8081,8443,8444",,HBSS-ePO,Microsoft Windows Server 2012 R2 Standard,sv,,exist,exist,,31
+37,pnpower.lan,,172.30.5.4,,,hq-openvas,debian,sv,,exist,exist,Fleet,31
+38,pnpower.lan,,172.30.5.5,"135,139,445,5040,5985,8081",,hq-win-hunt-01,Windows,ws,,exist,exist,,31
+39,pnpower.lan,,172.30.5.7,22,,hq-kali-hunt-01,debian,ws,,exist,,,31
+40,pnpower.lan,,172.30.5.8,22,,hq-kali-hunt-02,debian,ws,,exist,,,31
+41,pnpower.lan,,172.30.5.11,22,,hq-kali-hunt-05,Linux,offered_ws,,exist,,,31
+42,pnpower.lan,,172.30.5.12,22,,hq-kali-hunt-06,Linux,offered_ws,,exist,,,31
+43,pnpower.lan,,172.30.2.2,,,hq-mail,,sv,,exist,,,30
+44,pnpower.lan,,172.30.2.3,135-139,,hq-fail,Microsoft Windows Server 2016 Datacenter,sv,,exist,exist,Fleet,30
+45,pnpower.lan,,172.30.2.4,,,hq-dc,Microsoft Windows Server 2016 Datacenter,sv,,exist,exist,,30
+46,pnpower.lan,,172.30.2.41,,,hq-dc-2,Microsoft Windows Server 2016 Datacenter,sv,,exist,exist,Fleet,30
+47,,,172.16.11.2,,,pg-powerplant,,offered_sv,,exist,,,108
+48,,,172.16.12.2,,,pg-plc,,offered_sv,,exist,,,109
+49,,,172.16.10.2,,,pg-hmi,,offered_ws,,exist,,,110
+50,,,172.16.79.34,,,hist-client,,offered_ws,,exist,,,140
+51,,,172.16.79.36,,,ics-data-srv,,offered_sv,,exist,,,140
+52,prod.pnpower.lan,,172.29.2.4,"53,88,135,139,389,445,464,593,636,3268,3269,5985,8022,8081,9389",,prod-dc,Microsoft Windows Server 2016 Datacenter,sv,,exist,exist,,13
+53,,,172.28.2.1,22,,,,rt,,not exist,,,"136,142"
+54,eng.pnpower.lan,,172.28.2.2,"25,80,81,135,139,443,444,445,465,475,587,593,717,808,890,2525,3800,3801,3803,3823,3828,3843,3847,3863,3875,5060,5062,5065,5985,6001,6005,6006,6007,6008,6009,6017,8022,8081,8172,9710",,eng-mail,Microsoft Windows Server 2012 R2 Datacenter,sv,,not exist,exist,,136
+55,eng.pnpower.lan,,172.28.2.3,"135,139,445,5985,8022,8081",,eng-file,Microsoft Windows Server 2016 Datacenter,sv,,not exist,exist,,136
+56,eng.pnpower.lan,,172.28.2.4,"53,88,135,139,389,445,464,593,636,3268,3269,5985,8022,8081,9389",,eng-dc,Microsoft Windows Server 2016 Datacenter,sv,,not exist,exist,,136
+57,eng.pnpower.lan,,172.28.2.41,"53,88,135,139,389,445,464,593,636,3268,3269,5985,8022,8081,9389",,eng-dc-2,Microsoft Windows Server 2016 Datacenter,sv,,not exist,exist,,136
+58,eng.pnpower.lan,,172.28.3.1,22,,,,rt,,not exist,,,"137,142"
+59,eng.pnpower.lan,,172.28.3.21,"135,139,445,5040,5357,5985,8022,8081",,eng-dev01,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,137
+60,eng.pnpower.lan,,172.28.3.22,"135,139,445,5040,5357,5985,8022,8081",,eng-dev02,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,137
+61,eng.pnpower.lan,,172.28.3.23,"135,139,445,5040,5357,5985,8022,8081",,eng-dev03,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,137
+62,eng.pnpower.lan,,172.28.3.24,"135,139,445,5040,5357,5985,8022,8081",,eng-dev04,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,137
+63,eng.pnpower.lan,,172.28.3.25,"135,139,445,5040,5357,5985,8022,8081",,eng-dev05,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,137
+64,eng.pnpower.lan,,172.28.3.26,"135,139,445,5040,5357,5985,8022,8081",,eng-dev06,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,137
+65,eng.pnpower.lan,,172.28.3.27,"135,139,445,5040,5357,5985,8022,8081",,eng-dev07,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,137
+66,eng.pnpower.lan,,172.28.3.28,"135,139,445,5040,5357,5985,8022,8081",,eng-dev08,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,137
+67,eng.pnpower.lan,,172.28.3.29,"135,139,445,5040,5357,5985,8022,8081",,eng-dev09,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,137
+68,,,172.28.5.1,22,,,,rt,,not exist,,,"138,142"
+69,eng.pnpower.lan,,172.28.5.101,"135,139,445,5040,5357,5985,8022,8081",,eng-work01,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,138
+70,eng.pnpower.lan,,172.28.5.102,"135,139,445,5040,5357,5985,8022,8081",,eng-work02,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,138
+71,eng.pnpower.lan,,172.28.5.103,"135,139,445,5040,5357,5985,8022,8081",,eng-work03,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,138
+72,eng.pnpower.lan,,172.28.5.104,"135,139,445,5040,5357,5985,8022,8081",,eng-work04,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,138
+73,eng.pnpower.lan,,172.28.5.105,"135,139,445,5040,5357,5985,8022,8081",,eng-work05,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,138
+74,eng.pnpower.lan,,172.28.5.106,"135,139,445,5040,5357,5985,8022,8081",,eng-work06,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,138
+75,eng.pnpower.lan,,172.28.5.107,"135,139,445,5040,5357,5985,8022,8081",,eng-work07,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,138
+76,eng.pnpower.lan,,172.28.5.108,"135,139,445,5040,5357,5985,8022,8081",,eng-work08,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,138
+78,pnpower.lan,,172.30.2.5,"80,135,139,445,5985,8081,8530,8531",,hq-wsus,Microsoft Windows Server 2016 Datacenter,sv,,not exist,exist,,30
+79,pnpower.lan,,172.30.2.6,444,,hq-exchange,Microsoft Windows Server 2016 Datacenter,sv,,not exist,exist,Fleet,30
+80,,,172.30.3.1,22,,,,rt,,not exist,,,"25,28"
+81,pnpower.lan,,172.30.3.101,"135,139,445,5040,5985,8081",,hq-staff1,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,28
+82,pnpower.lan,,172.30.3.102,"135,139,445,5040,5985,8081",,hq-staff2,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,28
+83,pnpower.lan,,172.30.3.103,"135,139,445,5040,5985,8081",,hq-staff3,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,28
+84,pnpower.lan,,172.30.3.104,"135,139,445,5040,5985,8081",,hq-staff4,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,28
+85,pnpower.lan,,172.30.3.105,"135,139,445,5040,5985,8081",,hq-staff5,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,28
+86,pnpower.lan,,172.30.3.106,"135,139,445,5040,5985,8081",,hq-staff6,Microsoft Windows 10 Enterprise,ws,,not exist,exist,Fleet,28
+87,pnpower.lan,,172.30.3.107,"135,139,445,5040,5985,8081",,hq-staff7,Microsoft Windows 10 Enterprise,ws,,not exist,exist,Fleet,28
+88,pnpower.lan,,172.30.3.108,"135,139,445,5040,5985,8081",,hq-staff8,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,28
+89,pnpower.lan,,172.30.3.109,"135,139,445,5040,5985,8081",,hq-staff9,Microsoft Windows 10 Enterprise,ws,,not exist,exist,Fleet,28
+90,pnpower.lan,,172.30.3.110,"135,139,445,5040,5985,8081",,hq-staff10,,ws,,not exist,exist,,28
+91,pnpower.lan,,172.30.3.111,"135,139,445,5040,5985,8081",,hq-staff11,,ws,,not exist,exist,Fleet,28
+92,pnpower.lan,,172.30.3.112,"135,139,445,5040,5985,8081",,hq-staff12,Microsoft Windows 10 Enterprise,ws,,not exist,exist,Fleet,28
+95,pnpower.lan,,172.30.4.101,"135,139,445,5040,5985,8081",,hq-op01,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,29
+96,pnpower.lan,,172.30.4.102,"135,139,445,5040,5985,8081",,hq-op02,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,29
+97,pnpower.lan,,172.30.4.103,"135,139,445,5040,5985,8081",,hq-op03,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,29
+98,pnpower.lan,,172.30.4.104,"135,139,445,5040,5985,8081",,hq-op04,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,29
+99,pnpower.lan,,172.30.4.105,"135,139,445,5040,5985,8081",,hq-op05,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,29
+100,pnpower.lan,,172.30.4.106,"135,139,445,5040,5985,8081",,hq-op06,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,29
+101,pnpower.lan,,172.30.4.107,"135,139,445,5040,5985,8081",,hq-op07,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,29
+102,pnpower.lan,,172.30.4.108,"135,139,445,5040,5985,8081",,hq-op08,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,29
+103,pnpower.lan,,172.30.4.109,"135,139,445,5040,5985,8081",,hq-op09,Microsoft Windows 10 Enterprise,ws,,not exist,exist,Fleet,29
+106,,,172.28.0.2,22,,eng-firefall,,fw,,exist,exist,,"1,142"
+107,,,172.16.10.1<br>172.16.11.1<br>172.16.12.1<br>172.16.79.33,,,modbus-router,,rt,,exist,,,
+108,,,172.16.11.0/24,,,pg-siim,,nw,,exist,,,107
+109,,,172.16.12.0/24,,,pg-plc,,nw,,exist,,,107
+110,,,172.16.10.0/24,,,pg-mtu,,nw,,exist,,,107
+111,,,172.29.2.1<br>172.29.0.6,,,prod-core-router,,rt,,exist,,,"8,13"
+112,prod.pnpower.lan,,172.29.2.2,"25,80,81,135,139,443,444,445,465,475,587,593,717,808,890,2525,3800,3801,3803,3823,3828,3843,3847,3863,3875,5060,5062,5065,5985,6001,6005,6006,6007,6008,6009,6018,8022,8081,8172,9710",,prod-mail,Microsoft Windows Server 2012 R2 Datacenter,sv,,not exist,exist,,13
+113,prod.pnpower.lan,,172.29.2.3,"135,139,445,5985,8022,8081",,prod-file,Microsoft Windows Server 2016 Datacenter,sv,,not exist,exist,,13
+114,prod.pnpower.lan,,172.29.2.41,"53,88,135,139,389,445,464,593,636,3268,3269,5985,8022,8081,9389",,Prod-dc-2,Microsoft Windows Server 2016 Datacenter,sv,,not exist,exist,,13
+115,,,172.28.0.1,,,eng-edge-router,,rt,,exist,,,1
+116,prod.pnpower.lan,,172.29.3.1,22,,,,rt,,not exist,,,8
+117,prod.pnpower.lan,,172.29.3.11,"135,139,445,5040,5357,5985,8022,8081",,prod-win01,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,116
+118,prod.pnpower.lan,,172.29.3.12,"135,139,445,5040,5357,5985,8022,8081",,prod-win02,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,116
+119,prod.pnpower.lan,,172.29.3.13,"135,139,445,5040,5357,5985,8022,8081",,prod-win03,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,116
+120,prod.pnpower.lan,,172.29.3.14,"135,139,445,5040,5357,5985,8022,8081",,prod-win04,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,116
+121,prod.pnpower.lan,,172.29.3.15,"135,139,445,5040,5357,5985,8022,8081",,prod-win05,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,116
+122,prod.pnpower.lan,,172.29.3.16,"135,139,445,5040,5357,5985,8022,8081",,prod-win06,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,116
+123,prod.pnpower.lan,,172.29.3.17,"135,139,445,5040,5357,5985,8022,8081",,prod-win07,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,116
+124,prod.pnpower.lan,,172.29.3.18,"135,139,445,5040,5357,5985,8022,8081",,prod-win08,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,116
+125,prod.pnpower.lan,,172.29.3.19,"135,139,445,5040,5357,5985,8022,8081",,prod-win09,Microsoft Windows 10 Enterprise,ws,,not exist,exist,,116
+126,,,172.30.0.1,"22,179",,Hq-edge-router,,rt,,exist,,,142
+127,,,172.30.0.2,22,,,,rt,,not exist,,,"25,34"
+128,,,172.30.1.1,22,,,,rt,,not exist,,,"25,33"
+129,,,172.30.1.2,"25,135,389,636,1025,1026,1027,1028,1030,1032,1035,1067,1103,1105,1115,9389",,,,,,not exist,,,33
+130,,,172.30.1.3,"53,135",,,,,,not exist,,,33
+132,pnpower.lan,,172.30.5.10,22,,,Linux,,,not exist,,,31
+133,pnpower.lan,,172.30.5.13,22,,,Linux,,,not exist,,,31
+134,pnpower.lan,,172.30.5.14,22,,,Linux,,,not exist,,,31
+135,pnpower.lan,,172.30.5.9,22,,,Linux,,,not exist,,,31
+136,eng.pnpower.lan,,172.28.2.0/24,,,,,nw,,not exist,,,
+137,eng.pnpower.lan,,172.28.3.0/24,,,,,nw,,not exist,,,
+138,eng.pnpower.lan,,172.28.5.0/24,,,,,nw,,not exist,,,
+139,,,172.29.0.1,,,,,rt,,exist,,,"7,8"
+140,,,172.16.79.32/29,,,prod.PP-Services,,nw,,exist,,,107
+141,,,172.30.4.1,,,,,rt,,not exist,,,"25,29"
+142,,,172.30.0.5,22,,,,rt,,not exist,,,25
+143,pnpower.lan,,172.30.5.6,"135,139,445,5040,5985,8081",,hq-win-hunt-02,Winsows,ws,,exist,exist,,31
+```
+
+### nmap出力インポート用カスタムプラグイン
+- nmapのXML出力(`-oX`)の内容をそのままDrawioにインポートできるカスタムプラグイン
+- 初期登録および情報の更新に対応
+  - Host Discovery -> Port Scan 等のスキャン要領の場合もプラグイン内の処理で対応
+- チューニングにはJavascriptおよびDrawioのオブジェクトやAPIに関する知識が必要
+  - サンプルコードには最低限のノードおよびリレーションの作成コードは記載しているので基本的なJavascriptの知識だけでもある程度チューニング可能と思料
+- nmapの出力にはサブネットを判断できる情報はないので、ネットワークを描画する場合は推測で描画する必要がある
+  - 現在は`/24`で描画
+
+#### Drawio Custorm Plugin (`DrawNmap.js`)
+```js
+Draw.loadPlugin(function(ui){
+    var div = document.createElement('div');
+    div.style.padding = '10px';
+    
+    var text = document.createElement('textarea');
+    text.style.height = '200px';
+    text.style.width = '100%';
+
+    div.appendChild(text);
+
+    var graph = ui.editor.graph;
+
+    mxResources.parse('fromNmap=From Nmap');
+
+    var wnd = new mxWindow(mxResources.get('fromNmap'), div, document.body.offsetWidth - 480, 140, 320, 300, true, true);
+    wnd.destroyOnClose = false;
+    wnd.setMaximizable(false);
+    wnd.setResizable(false);
+    wnd.setClosable(true);
+
+    var reset_btn = mxUtils.button(mxResources.get('reset'), function(){
+        text.value = '';
+    });
+
+    reset_btn.style.marginTop = '8px';
+    reset_btn.style.marginRight = '4px';
+    reset_btn.style.padding = '4px';
+    div.appendChild(reset_btn);
+
+    var btn = mxUtils.button('Insert', function(){
+        try{
+            insert_nmap(text.value);
+        }
+        catch(e){
+            ui.handleError(e);
+        }
+    });
+
+    btn.style.marginTop = '8px';
+    btn.style.padding = '4px';
+    div.appendChild(btn);
+
+    ui.actions.addAction('fromNmap', function() {
+        wnd.setVisible(!wnd.isVisible());
+
+        if (wnd.isVisible()) {
+            text.focus();
+        }
+    });
+
+    var theMenu = ui.menus.get('insert');
+    var oldMenu = theMenu.funct;
+
+    theMenu.funct = function(menu, parent) {
+        oldMenu.apply(this, arguments);
+
+        ui.menus.addMenuItems(menu, ['fromNmap'], parent);
+    };
+
+    function insert_nmap(result){
+        var parent = graph.getDefaultParent();
+
+        const parser = new DOMParser();
+        var xml = parser.parseFromString(result, 'text/xml');
+        
+        var styles = {
+            'ws': 'verticalLabelPosition=bottom;sketch=0;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;align=center;outlineConnect=0;shape=mxgraph.citrix.desktop;',
+            'network': '"sketch=0;html=1;aspect=fixed;strokeColor=none;shadow=0;align=center;verticalAlign=middle;fillColor=lightblue;shape=mxgraph.gcp2.network',
+        }
+        var dataset = [];
+        var networks = [];
+        var objects = {};
+        var current_objects = {};
+
+        var hosts = xml.querySelectorAll('host');
+
+        for(host of hosts){
+            var data = {};
+            
+            var addresses = host.querySelectorAll('address');
+            for(address of addresses){
+                if(address.getAttribute('addrtype') == 'ipv4'){
+                    data['address'] = address.getAttribute('addr');
+                }
+            }
+            
+            data['port'] = [];
+            var ports = host.querySelectorAll('port');
+            for(port of ports){
+                var state = port.querySelector('state');
+                if(state.getAttribute('state') == 'open'){
+                    data['port'].push(port.getAttribute('portid') + '/' + port.getAttribute('protocol').toUpperCase());
+                }
+            }
+
+            data['type'] = 'ws';
+				
+            var address_split = data.address.split('.');
+            var network  = address_split[0] + '.' + address_split[1] + '.' + address_split[2] + '.' + '0/24';
+
+            data['network'] = network;
+
+            if(!networks.includes(network)){
+                dataset.push({
+                    'address': network,
+                    'type': 'network',
+                });
+                networks.push(network);
+            }
+            
+            dataset.push(data);
+        }
+
+        var cells = graph.model.cells;
+        for(id in cells){
+            var cell = cells[id];
+            if(cell.getAttribute('IPAddress')){
+                current_objects[cell.getAttribute('IPAddress')] = cell;
+            }
+        }
+
+        for(data of dataset){
+            if(current_objects[data.address]){
+                var node = current_objects[data.address];
+            }else{
+                var doc = mxUtils.createXmlDocument();
+                var node = doc.createElement('MyNode');
+            }
+            node.setAttribute('label', '%IPAddress%');
+            node.setAttribute('IPAddress', data.address);
+            node.setAttribute('type', data.type);
+            node.setAttribute('placeholders', 1);
+            if(data.port){
+                node.setAttribute('Port', data.port.join(', '));
+            }
+            if(data.network){
+                node.setAttribute('Network', data.network);
+            }
+            if(current_objects[data.address]){
+                objects[data.address] = current_objects[data.address];
+            }else{
+                var obj = graph.insertVertex(parent, null, node, 0, 0, 98, 89, styles[data.type]);
+                objects[data.address] = obj;
+            }
+
+            if(data.type == 'ws'){
+                graph.insertEdge(parent, null, '', objects[data.address], objects[data.network], 'rounded=0;fontSize=11;endArrow=none;endFill=0;jumpStyle=sharp;');    
+            }
+        }
+
+        graph.refresh();
+
+        var layout = new mxFastOrganicLayout(graph);
+        layout.execute(parent);
+    }
+});
+```
+
+### Velocirapor出力インポート用カスタムプラグイン
+- VelociraptorのCustom Artifactの出力をそのままDrawioにインポートできるカスタムプラグイン
+- 初期登録および情報の更新に対応
+  - nmap用のプラグインで描いたオブジェクトでも更新可能
+- Velociraptorのエージェントをインストールしているホストからの情報しか描画できない
+- チューニングにはJavascriptおよびDrawioのオブジェクトやAPIに関する知識が必要
+  - サンプルコードには最低限のノードおよびリレーションの作成コードは記載しているので基本的なJavascriptの知識だけでもある程度チューニング可能と思料
+
+#### Velociraptor Custom Artifact
+```
+name: CustomInfo
+description: |
+   This is the human readable description of the artifact.
+
+# Can be CLIENT, CLIENT_EVENT, SERVER, SERVER_EVENT or NOTEBOOK
+type: CLIENT
+
+sources:
+  - precondition:
+      SELECT OS From info() where OS = 'windows'
+
+    query: |
+      LET ListenPort = array(_={SELECT str(str=Laddr.Port) + "/" + TypeString FROM netstat() WHERE Status = 'LISTEN' AND FamilyString = 'IPv4'})
+      LET IPAddress = array(_={SELECT IPAddress FROM wmi(query='SELECT * from Win32_NetworkAdapterConfiguration') WHERE IPAddress})
+      LET IPSubnet = array(_={SELECT IPSubnet FROM wmi(query='SELECT * from Win32_NetworkAdapterConfiguration') WHERE IPAddress})
+      LET DefaultIPGateway = array(_={SELECT DefaultIPGateway FROM wmi(query='SELECT * from Win32_NetworkAdapterConfiguration') WHERE IPAddress})
+
+      SELECT Hostname, OS, Architecture, Platform, PlatformVersion, KernelVersion, Fqdn,
+      ListenPort, IPAddress, IPSubnet,
+      join(array=DefaultIPGateway, sep=",") AS DefaultIPGateway
+      FROM info()
+```
+#### Drawio Custorm Plugin (`DrawVelociraptor.js`)
+```js
+Draw.loadPlugin(function(ui){
+    var div = document.createElement('div');
+    div.style.padding = '10px';
+    
+    var text = document.createElement('textarea');
+    text.style.height = '200px';
+    text.style.width = '100%';
+
+    div.appendChild(text);
+
+    var graph = ui.editor.graph;
+
+    mxResources.parse('fromVelociraptor=From Velociraptor');
+
+    var wnd = new mxWindow(mxResources.get('fromVelociraptor'), div, document.body.offsetWidth - 480, 140, 320, 300, true, true);
+    wnd.destroyOnClose = false;
+    wnd.setMaximizable(false);
+    wnd.setResizable(false);
+    wnd.setClosable(true);
+
+    var reset_btn = mxUtils.button(mxResources.get('reset'), function(){
+        text.value = '';
+    });
+
+    reset_btn.style.marginTop = '8px';
+    reset_btn.style.marginRight = '4px';
+    reset_btn.style.padding = '4px';
+    div.appendChild(reset_btn);
+
+    var btn = mxUtils.button('Insert', function(){
+        try{
+            insert_velociraptor(text.value);
+        }
+        catch(e){
+            ui.handleError(e);
+        }
+    });
+
+    btn.style.marginTop = '8px';
+    btn.style.padding = '4px';
+    div.appendChild(btn);
+
+    ui.actions.addAction('fromVelociraptor', function() {
+        wnd.setVisible(!wnd.isVisible());
+
+        if (wnd.isVisible()) {
+            text.focus();
+        }
+    });
+
+    var theMenu = ui.menus.get('insert');
+    var oldMenu = theMenu.funct;
+
+    theMenu.funct = function(menu, parent) {
+        oldMenu.apply(this, arguments);
+
+        ui.menus.addMenuItems(menu, ['fromVelociraptor'], parent);
+    };
+
+    function insert_velociraptor(result){
+        var parent = graph.getDefaultParent();
+
+        //var dataset = JSON.parse(result);
+        
+        var styles = {
+            'windows': 'verticalLabelPosition=bottom;sketch=0;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;align=center;outlineConnect=0;shape=mxgraph.citrix.desktop;',
+            'network': '"sketch=0;html=1;aspect=fixed;strokeColor=none;shadow=0;align=center;verticalAlign=middle;fillColor=lightblue;shape=mxgraph.gcp2.network',
+        }
+        var networks = [];
+        var objects = {};
+        var current_objects = {};
+
+        var cells = graph.model.cells;
+        for(id in cells){
+            var cell = cells[id];
+            if(cell.getAttribute('ClientId')){
+                current_objects[cell.getAttribute('ClientId')] = cell;
+            }
+            if(cell.getAttribute('IPAddress')){
+                current_objects[cell.getAttribute('IPAddress')] = cell;
+            }
+        }
+
+        for(line of result.split('\n')){
+            if(!line){
+                continue;
+            }
+
+            var data = JSON.parse(line);
+            var ipv4_address = ipv4_check(data.IPAddress);
+            var ipv4_subnet = ipv4_check(data.IPSubnet);
+            var ipv4_gateway = ipv4_check(data.DefaultIPGateway);
+            
+            if(current_objects[data.ClientId]){
+                var node = current_objects[data.ClientId];
+            }else if(ipv4_address.length > 0 && current_objects[ipv4_address.join(', ')]){
+                var node = current_objects[ipv4_address.join(', ')];
+            }else{
+                var doc = mxUtils.createXmlDocument();
+                var node = doc.createElement('MyNode');
+            }
+            node.setAttribute('placeholders', 1);
+            node.setAttribute('label', '%IPAddress%<br>%Hostname%');
+            node.setAttribute('ClientId', data.ClientId);
+            node.setAttribute('Hostname', data.Hostname);
+            node.setAttribute('OS', data.OS);
+            node.setAttribute('Architecture', data.Architecture);
+            node.setAttribute('Platform', data.Platform);
+            node.setAttribute('PlatformVersion', data.PlatformVersion);
+            node.setAttribute('KernelVersion', data.KernelVersion);
+            if(ipv4_address.length > 0){
+                node.setAttribute('IPAddress', ipv4_address.join(', '));
+            }
+            if(ipv4_subnet.length > 0){
+                node.setAttribute('IPSubnet', ipv4_subnet.join(', '));
+            }
+            if(ipv4_gateway.length > 0){
+                node.setAttribute('DefaultIPGateway', ipv4_gateway.join(', '));
+            }
+            if(data.ListenPort && data.ListenPort.length > 0){
+                node.setAttribute('Port', data.ListenPort.join(', '));
+            }
+            
+            if(current_objects[data.ClientId]){
+                objects[data.ClientId] = current_objects[data.ClientId];
+            }else if(ipv4_address.length > 0 && current_objects[ipv4_address.join(', ')]){
+                objects[ipv4_address.join(', ')] = current_objects[ipv4_address.join(', ')];
+            }else{
+                var obj = graph.insertVertex(parent, null, node, 0, 0, 98, 89, styles[data.OS]);
+                objects[data.ClientId] = obj;
+            }
+
+            for(var i = 0; i < ipv4_address.length; i++){
+                var network_address = get_network_address(ipv4_address[i], ipv4_subnet[i]);
+                
+                if(!current_objects[network_address] && !objects[network_address]){
+                    var doc = mxUtils.createXmlDocument();
+                    var node = doc.createElement('MyNode');
+                    node.setAttribute('placeholders', 1);
+                    node.setAttribute('label', '%IPAddress%');
+                    node.setAttribute('IPAddress', network_address);
+                    var obj = graph.insertVertex(parent, null, node, 0, 0, 98, 89, styles['network']);
+                    objects[network_address] = obj;
+                }
+
+                graph.insertEdge(parent, null, '', objects[data.ClientId], objects[network_address], 'rounded=0;fontSize=11;endArrow=none;endFill=0;jumpStyle=sharp;');
+            }
+        }
+
+        graph.refresh();
+
+        var layout = new mxFastOrganicLayout(graph);
+        layout.execute(parent);
+    }
+
+    function ipv4_check(lists){
+        var result = [];
+
+        if(Array.isArray(lists)){
+            for(list of lists){
+                if(list.includes('.')){
+                    result.push(list);
+                }
+            }
+        }else{
+            result.push(lists);
+        }
+        
+        return result;
+    }
+
+    function get_network_address(ip, subnet){
+        var ip_bin = '';
+        var subnet_bin = '';
+        for(num of ip.split('.')){
+            ip_bin += Number(num).toString(2).padStart(8, 0);
+        }
+        for(num of subnet.split('.')){
+            subnet_bin += Number(num).toString(2).padStart(8, 0);
+        }
+        var mask = subnet_bin.match(/1/g).length;
+        var network_bin = ip_bin.substr(0, mask).padEnd(32, 0);
+        var network_address = parseInt(network_bin.substr(0, 8), 2) + '.' + parseInt(network_bin.substr(8, 8), 2) + '.' + parseInt(network_bin.substr(16, 8), 2) + '.' + parseInt(network_bin.substr(24, 8), 2);
+        
+        return network_address + '/' + mask;
+    }
+});
+```
+
+## netstatの状態を可視化するDrawio Custom Plugin
+- Velociraptorの`Windows.Network.Netstat`の出力をDrawioで可視化する
+- 可視化するのは`Established`になっているものに限定
+- Drawioで描いたあと、線にマウスオーバーさせるとどのプロセスがコネクションを作成してるか等を表示
+- チューニングにはJavascriptおよびDrawioのオブジェクトやAPIに関する知識が必要
+  - サンプルコードには最低限のノードおよびリレーションの作成コードは記載しているので基本的なJavascriptの知識だけでもある程度チューニング可能と思料
+
+#### Drawio Custorm Plugin (`DrawNetstat.js`)
+```
+Draw.loadPlugin(function(ui){
+    var div = document.createElement('div');
+    div.style.padding = '10px';
+    
+    var text = document.createElement('textarea');
+    text.style.height = '200px';
+    text.style.width = '100%';
+
+    div.appendChild(text);
+
+    var graph = ui.editor.graph;
+
+    mxResources.parse('fromNetstat=From Netstat');
+
+    var wnd = new mxWindow(mxResources.get('fromNetstat'), div, document.body.offsetWidth - 480, 140, 320, 300, true, true);
+    wnd.destroyOnClose = false;
+    wnd.setMaximizable(false);
+    wnd.setResizable(false);
+    wnd.setClosable(true);
+
+    var reset_btn = mxUtils.button(mxResources.get('reset'), function(){
+        text.value = '';
+    });
+
+    reset_btn.style.marginTop = '8px';
+    reset_btn.style.marginRight = '4px';
+    reset_btn.style.padding = '4px';
+    div.appendChild(reset_btn);
+
+    var btn = mxUtils.button('Insert', function(){
+        try{
+            insert_netstat(text.value);
+        }
+        catch(e){
+            ui.handleError(e);
+        }
+    });
+
+    btn.style.marginTop = '8px';
+    btn.style.padding = '4px';
+    div.appendChild(btn);
+
+    ui.actions.addAction('fromNetstat', function() {
+        wnd.setVisible(!wnd.isVisible());
+
+        if (wnd.isVisible()) {
+            text.focus();
+        }
+    });
+
+    var theMenu = ui.menus.get('insert');
+    var oldMenu = theMenu.funct;
+
+    theMenu.funct = function(menu, parent) {
+        oldMenu.apply(this, arguments);
+
+        ui.menus.addMenuItems(menu, ['fromNetstat'], parent);
+    };
+
+    function insert_netstat(result){
+        var parent = graph.getDefaultParent();
+        
+        var styles = {
+            'windows': 'verticalLabelPosition=bottom;sketch=0;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;align=center;outlineConnect=0;shape=mxgraph.citrix.desktop;',
+            'network': '"sketch=0;html=1;aspect=fixed;strokeColor=none;shadow=0;align=center;verticalAlign=middle;fillColor=lightblue;shape=mxgraph.gcp2.network',
+        }
+        
+        var objects = {};
+
+        for(line of result.split('\n')){
+            if(!line){
+                continue;
+            }
+
+            var data = JSON.parse(line);
+            
+            if(data['Laddr.IP'] == data['Raddr.IP'] || data['Status'] != 'ESTAB'){
+                continue;
+            }
+            
+            console.log(data);
+            
+            if(!objects[data['Laddr.IP']]){
+                objects[data['Laddr.IP']] = create_host(data['Laddr.IP']);
+            }
+            
+            if(!objects[data['Raddr.IP']]){
+                objects[data['Raddr.IP']] = create_host(data['Raddr.IP']);
+            }
+            
+            create_connection(data);
+            
+            function create_host(ip){
+                var doc = mxUtils.createXmlDocument();
+                var node = doc.createElement('MyNode');
+                node.setAttribute('placeholders', 1);
+                node.setAttribute('label', '%IPAddress%');
+                node.setAttribute('IPAddress', ip);
+                var obj = graph.insertVertex(parent, null, node, 0, 0, 98, 89, 'verticalLabelPosition=bottom;sketch=0;aspect=fixed;html=1;verticalAlign=top;strokeColor=none;align=center;outlineConnect=0;shape=mxgraph.citrix.desktop;');
+                return obj;
+            }
+            
+            function create_connection(data){
+                if(data['Laddr.Port'] > data['Raddr.Port']){
+                    var from_host = objects[data['Laddr.IP']];
+                    var to_host = objects[data['Raddr.IP']];
+                    var port = data['Raddr.Port'];
+                }else{
+                    var from_host = objects[data['Raddr.IP']];
+                    var to_host = objects[data['Laddr.IP']];
+                    var port = data['Laddr.Port'];
+                }
+                    
+                var doc = mxUtils.createXmlDocument();
+                var edge = doc.createElement('MyEdge');
+                edge.setAttribute('label', port);
+                edge.setAttribute('Local_IP', data['Laddr.IP']);
+                edge.setAttribute('Local_Port', data['Laddr.Port']);
+                edge.setAttribute('Remote_IP', data['Raddr.IP']);
+                edge.setAttribute('Remote_Port', data['Raddr.Port']);
+                edge.setAttribute('FQDN', data['Fqdn']);
+                edge.setAttribute('Timestamp', data['Timestamp']);
+                edge.setAttribute('Process', data['Name']);
+                edge.setAttribute('PID', data['Pid']);
+                graph.insertEdge(parent, null, edge, from_host, to_host, 'edgeStyle=orthogonalEdgeStyle;fontSize=11;curved=1;rounded=1;');
+            }
+        }
+
+        var layout = new mxFastOrganicLayout(graph);
+        layout.execute(parent);
+        
+        wnd.setVisible(false);
+    }
+});
+
+```
+
+## Go2Neo版Playbook
+```
+{
+	"nodes": [
+		{
+			"id": 745,
+			"name": "ホストスキャン",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 746,
+			"name": "ネットワーク内のホスト情報",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 747,
+			"name": "管理外のホスト情報",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 748,
+			"name": "ネットワーク図との照合",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 749,
+			"name": "[RFI]管理外ホストに対する情報要求",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"RFI",
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 750,
+			"name": "ホスト基本情報収集",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "Generic.Client.Info",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 751,
+			"name": "ホスト一覧",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 752,
+			"name": "サーバ一覧",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 753,
+			"name": "ユーザ端末一覧",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 754,
+			"name": "ネットワークの理解",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 755,
+			"name": "ホストの理解",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 756,
+			"name": "ユーザの理解",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 757,
+			"name": "ユーザ一覧情報収集",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "Windows.Sys.Users",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 758,
+			"name": "ユーザ一覧",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 759,
+			"name": "ホストごとのドメインロール収集",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "Windows.System.DomainRole",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 760,
+			"name": "ホストごとのドメインロール",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 761,
+			"name": "非表示ユーザ収集",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "Windows.Registry.HiddenUsers",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 762,
+			"name": "非表示ユーザ",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 764,
+			"name": "命名規則に反するユーザ",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 765,
+			"name": "不審なアカウントが存在する可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 766,
+			"name": "高権限グループの所属するアカウント調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"ToDo",
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 767,
+			"name": "ローカルにログオンするアカウント調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"ToDo",
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 768,
+			"name": "新規に追加されたユーザ・グループの調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 769,
+			"name": "ホストのネットワークインターフェースの調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "Windows.Sys.Interfaces",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 770,
+			"name": "未知のネットワーク",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 771,
+			"name": "不審な通信先と通信している可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 772,
+			"name": "Pipeを使用した横展開の調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 773,
+			"name": "ネットワーク図",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 774,
+			"name": "稼働サービスの理解",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 775,
+			"name": "サービスの収集",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "Windows.System.Services",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 776,
+			"name": "サービス一覧",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 777,
+			"name": "サービスの分析",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 778,
+			"name": "不審サービス",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 779,
+			"name": "侵害されたユーザ",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査",
+				"不審なプロセス調査",
+				"不審なレジストリの調査",
+				"不審なスケジュールの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 780,
+			"name": "侵害アカウントが実行したサービス調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 781,
+			"name": "セキュリティ機構の理解",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 782,
+			"name": "AV製品の確認",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "<ul>\n<li>PowerShell<br />\n<ul>\n<li><code>Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntiVirusProduct</code></li>\n</ul>\n</li>\n</ul>",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 783,
+			"name": "稼働中のAV製品",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 784,
+			"name": "不審ファイルまたはプロセス名",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"Indicator",
+				"不審なファイルの調査",
+				"不審なプロセス調査",
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 785,
+			"name": "ファイルの時系列情報の追跡",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 786,
+			"name": "ファイルパス",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 787,
+			"name": "ファイルが実行した内容",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 788,
+			"name": "不審PID",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査",
+				"不審なプロセス調査",
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 789,
+			"name": "ハッシュ値確認",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 790,
+			"name": "不審ファイルのハッシュ値",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"Indicator",
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 791,
+			"name": "VTによるハッシュ値検索",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 792,
+			"name": "ファイル抽出",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 793,
+			"name": "ファイル実体",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 794,
+			"name": "VTによるファイル解析",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 795,
+			"name": "ハッシュに一致するファイル検索",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "Generic.Detection.HashHunter",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 796,
+			"name": "侵害されたホスト",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査",
+				"不審なプロセス調査",
+				"不審なレジストリの調査",
+				"不審なスケジュールの調査",
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 797,
+			"name": "ファイル作成日時が最も古い端末が攻撃起点である可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 798,
+			"name": "不審なプロセスが実行中の可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査",
+				"不審なプロセス調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 799,
+			"name": "実行中プロセスの調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なプロセス調査"
+			],
+			"content": "Windows.System.Pslist",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 800,
+			"name": "攻撃者がよく使用するディレクトリの調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 801,
+			"name": "不審ファイルの設置ディレクトリ",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 802,
+			"name": "初期侵入がメールである可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 803,
+			"name": "メールクライアントによるファイル作成の調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 804,
+			"name": "組織で利用しているメールクライアント",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解",
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 806,
+			"name": "侵害されたユーザが実行するプロセス調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なプロセス調査"
+			],
+			"content": "Windows.System.Pslist",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 807,
+			"name": "初期侵入がブラウザである可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 808,
+			"name": "ブラウザによるファイル作成（ダウンロード履歴）の調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 809,
+			"name": "組織で利用しているブラウザ",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"BaseLineの理解",
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 811,
+			"name": "未署名バイナリの調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "Windows.System.UntrustedBinaries",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 812,
+			"name": "未署名バイナリ",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 813,
+			"name": "マルウェアである可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 814,
+			"name": "隠しファイル調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 815,
+			"name": "隠しファイル",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 816,
+			"name": "名称変更や削除されたファイル調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 817,
+			"name": "削除されたファイル",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 818,
+			"name": "過去にマルウェアが実行された可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 819,
+			"name": "ファイル/ディレクトリのアクセスログ調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 820,
+			"name": "特定のファイル/ディレクトリにアクセスした日時",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 821,
+			"name": "特定のファイル/ディレクトリにアクセスしたホスト",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 822,
+			"name": "埋め込みリンク調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "Windows.Forensics.Lnk",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 823,
+			"name": "埋め込みリンク",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 824,
+			"name": "INTEL情報（ハッシュ値）",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"INTEL",
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 825,
+			"name": "指定フォルダ配下のハッシュ値取得",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "Generic.Forensic.LocalHashes.Glob",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 826,
+			"name": "指定フォルダ配下のハッシュ値一覧",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 827,
+			"name": "既知インジケータとハッシュ値比較",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 828,
+			"name": "インターネットからダウンロードされたファイルの調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "Windows.Analysis.EvidenceOfDownload",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 829,
+			"name": "特定のファイル名が存在するホストの調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なファイルの調査"
+			],
+			"content": "Windows.Search.FileFinder",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 830,
+			"name": "プロセスインジェクションの調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なプロセス調査"
+			],
+			"content": "Windows.Memory.InjectedThreadEx",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 832,
+			"name": "不審プロセスのアクティビティ調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なプロセス調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 834,
+			"name": "不審プロセスの元ファイルの調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なプロセス調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 836,
+			"name": "cmd/powershellコマンドの調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なプロセス調査"
+			],
+			"content": "Windows.System.Powershell.PSReadline",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 838,
+			"name": "不審なコマンドが実行されている可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なプロセス調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 839,
+			"name": "不審な名前付きパイプが作成されている可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なプロセス調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 840,
+			"name": "不審な名前付きパイプの調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なプロセス調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 841,
+			"name": "プロセスリスト",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なプロセス調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 842,
+			"name": "名称が不審なプロセスの調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なプロセス調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 843,
+			"name": "プロセスリストの分析",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なプロセス調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 844,
+			"name": "不審プロセスの親子プロセス調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なプロセス調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 845,
+			"name": "SQLインジェクションが発生している可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なプロセス調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 846,
+			"name": "未署名プロセスが実行されている可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なプロセス調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 847,
+			"name": "未署名プロセスからの通信の調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なプロセス調査"
+			],
+			"content": "Windows.Network.NetstatEnriched",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 848,
+			"name": "レジストリを使用した永続化の可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なレジストリの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 850,
+			"name": "\"CurrentVersion\"レジストリを使用した永続化の調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なレジストリの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 851,
+			"name": "永続化に使用されたレジストリ",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"Indicator",
+				"不審なレジストリの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 852,
+			"name": "永続化に使用された不審ファイル",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"Indicator",
+				"不審なレジストリの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 853,
+			"name": "不審ファイルがマウントされた領域から起動された可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なレジストリの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 854,
+			"name": "マウントレジストリの調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なレジストリの調査"
+			],
+			"content": "Windows.Registry.MountPoints2",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 855,
+			"name": "マウントされたパス",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なレジストリの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 856,
+			"name": "特異なレジストリが攻撃に使用された可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なレジストリの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 857,
+			"name": "希少なレジストリの調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なレジストリの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 858,
+			"name": "不審なレジストリ",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"Indicator",
+				"不審なレジストリの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 859,
+			"name": "スケジュールされたタスクの調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なスケジュールの調査"
+			],
+			"content": "Windows.Remediation.ScheduledTasks<br />Windows.System.TaskScheduler",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 860,
+			"name": "不審なタスクスケジュール",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"Indicator",
+				"不審なスケジュールの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 861,
+			"name": "タスクスケジュール一覧",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なスケジュールの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 862,
+			"name": "タスクスケジュールの分析",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なスケジュールの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 863,
+			"name": "不審なタスクスケジュールが登録されている可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なスケジュールの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 864,
+			"name": "Autorunを使用した永続化の調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審なスケジュールの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 865,
+			"name": "永続化手法",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"Indicator",
+				"不審なスケジュールの調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 866,
+			"name": "不審なプロセスが外部通信をしている可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 867,
+			"name": "外部通信するプロセスの調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審な通信の調査"
+			],
+			"content": "Windows.Network.Netstat<br />Windows.Network.NetstatEnriched",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 868,
+			"name": "不審な通信先IP",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"Indicator",
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 869,
+			"name": "WimRMによる横展開の可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 870,
+			"name": "WinRM横展開の調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 871,
+			"name": "横展開元ホスト",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 872,
+			"name": "横展開先ホスト",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 873,
+			"name": "Pipeを使用した横展開の可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 874,
+			"name": "Pipeを使用した横展開手法の調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 875,
+			"name": "Psexecによる横展開の可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 876,
+			"name": "Psexec横展開の調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 877,
+			"name": "psexecサービス実行ファイル",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"Indicator",
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 878,
+			"name": "SSHによる横展開の可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 879,
+			"name": "SSH横展開の調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 880,
+			"name": "接続先SSHのPID",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 881,
+			"name": "内部プロキシが作成されている可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 882,
+			"name": "ポートフォワード設定の調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 883,
+			"name": "DNSトンネリングの可能性",
+			"bg_color": "#ffc0cb",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Idea"
+		},
+		{
+			"id": 884,
+			"name": "過剰なDNS通信の調査",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 885,
+			"name": "不審ドメイン",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"Indicator",
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 886,
+			"name": "不審な通信のパケットキャプチャ",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		},
+		{
+			"id": 887,
+			"name": "pcapファイル",
+			"bg_color": "#ffff00",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Info"
+		},
+		{
+			"id": 888,
+			"name": "pcapファイルの分析",
+			"bg_color": "#add8e6",
+			"group": "",
+			"isGroup": false,
+			"color": "",
+			"base_comment_text": "",
+			"base_comment_color": "",
+			"tag": [
+				"不審な通信の調査"
+			],
+			"content": "",
+			"icon": "",
+			"category": "Act"
+		}
+	],
+	"links": [
+		{
+			"from": 745,
+			"to": 746
+		},
+		{
+			"from": 746,
+			"to": 748
+		},
+		{
+			"from": 747,
+			"to": 749
+		},
+		{
+			"from": 748,
+			"to": 747
+		},
+		{
+			"from": 750,
+			"to": 753
+		},
+		{
+			"from": 750,
+			"to": 752
+		},
+		{
+			"from": 750,
+			"to": 751
+		},
+		{
+			"from": 754,
+			"to": 769
+		},
+		{
+			"from": 754,
+			"to": 745
+		},
+		{
+			"from": 755,
+			"to": 759
+		},
+		{
+			"from": 755,
+			"to": 750
+		},
+		{
+			"from": 756,
+			"to": 767
+		},
+		{
+			"from": 756,
+			"to": 766
+		},
+		{
+			"from": 756,
+			"to": 761
+		},
+		{
+			"from": 756,
+			"to": 757
+		},
+		{
+			"from": 757,
+			"to": 764
+		},
+		{
+			"from": 757,
+			"to": 758
+		},
+		{
+			"from": 759,
+			"to": 760
+		},
+		{
+			"from": 761,
+			"to": 762
+		},
+		{
+			"from": 762,
+			"to": 765
+		},
+		{
+			"from": 764,
+			"to": 765
+		},
+		{
+			"from": 765,
+			"to": 768
+		},
+		{
+			"from": 769,
+			"to": 770
+		},
+		{
+			"from": 770,
+			"to": 771
+		},
+		{
+			"from": 771,
+			"to": 772
+		},
+		{
+			"from": 773,
+			"to": 748
+		},
+		{
+			"from": 774,
+			"to": 775
+		},
+		{
+			"from": 775,
+			"to": 776
+		},
+		{
+			"from": 776,
+			"to": 777
+		},
+		{
+			"from": 777,
+			"to": 778
+		},
+		{
+			"from": 779,
+			"to": 862
+		},
+		{
+			"from": 779,
+			"to": 859
+		},
+		{
+			"from": 779,
+			"to": 806
+		},
+		{
+			"from": 779,
+			"to": 780
+		},
+		{
+			"from": 780,
+			"to": 778
+		},
+		{
+			"from": 781,
+			"to": 782
+		},
+		{
+			"from": 782,
+			"to": 783
+		},
+		{
+			"from": 784,
+			"to": 844
+		},
+		{
+			"from": 784,
+			"to": 843
+		},
+		{
+			"from": 784,
+			"to": 829
+		},
+		{
+			"from": 784,
+			"to": 819
+		},
+		{
+			"from": 784,
+			"to": 813
+		},
+		{
+			"from": 785,
+			"to": 788
+		},
+		{
+			"from": 785,
+			"to": 787
+		},
+		{
+			"from": 785,
+			"to": 786
+		},
+		{
+			"from": 786,
+			"to": 792
+		},
+		{
+			"from": 786,
+			"to": 789
+		},
+		{
+			"from": 788,
+			"to": 844
+		},
+		{
+			"from": 788,
+			"to": 843
+		},
+		{
+			"from": 788,
+			"to": 832
+		},
+		{
+			"from": 788,
+			"to": 836
+		},
+		{
+			"from": 788,
+			"to": 799
+		},
+		{
+			"from": 788,
+			"to": 834
+		},
+		{
+			"from": 789,
+			"to": 790
+		},
+		{
+			"from": 790,
+			"to": 827
+		},
+		{
+			"from": 790,
+			"to": 795
+		},
+		{
+			"from": 790,
+			"to": 791
+		},
+		{
+			"from": 792,
+			"to": 793
+		},
+		{
+			"from": 793,
+			"to": 794
+		},
+		{
+			"from": 795,
+			"to": 796
+		},
+		{
+			"from": 796,
+			"to": 886
+		},
+		{
+			"from": 796,
+			"to": 862
+		},
+		{
+			"from": 796,
+			"to": 859
+		},
+		{
+			"from": 796,
+			"to": 798
+		},
+		{
+			"from": 797,
+			"to": 795
+		},
+		{
+			"from": 798,
+			"to": 799
+		},
+		{
+			"from": 799,
+			"to": 841
+		},
+		{
+			"from": 799,
+			"to": 784
+		},
+		{
+			"from": 800,
+			"to": 784
+		},
+		{
+			"from": 800,
+			"to": 801
+		},
+		{
+			"from": 801,
+			"to": 819
+		},
+		{
+			"from": 802,
+			"to": 803
+		},
+		{
+			"from": 803,
+			"to": 796
+		},
+		{
+			"from": 803,
+			"to": 779
+		},
+		{
+			"from": 803,
+			"to": 784
+		},
+		{
+			"from": 804,
+			"to": 803
+		},
+		{
+			"from": 806,
+			"to": 796
+		},
+		{
+			"from": 806,
+			"to": 788
+		},
+		{
+			"from": 807,
+			"to": 808
+		},
+		{
+			"from": 808,
+			"to": 796
+		},
+		{
+			"from": 808,
+			"to": 779
+		},
+		{
+			"from": 808,
+			"to": 784
+		},
+		{
+			"from": 809,
+			"to": 808
+		},
+		{
+			"from": 811,
+			"to": 812
+		},
+		{
+			"from": 812,
+			"to": 813
+		},
+		{
+			"from": 813,
+			"to": 785
+		},
+		{
+			"from": 814,
+			"to": 815
+		},
+		{
+			"from": 815,
+			"to": 813
+		},
+		{
+			"from": 816,
+			"to": 817
+		},
+		{
+			"from": 817,
+			"to": 818
+		},
+		{
+			"from": 819,
+			"to": 821
+		},
+		{
+			"from": 819,
+			"to": 820
+		},
+		{
+			"from": 821,
+			"to": 796
+		},
+		{
+			"from": 822,
+			"to": 823
+		},
+		{
+			"from": 823,
+			"to": 813
+		},
+		{
+			"from": 824,
+			"to": 827
+		},
+		{
+			"from": 824,
+			"to": 795
+		},
+		{
+			"from": 825,
+			"to": 826
+		},
+		{
+			"from": 826,
+			"to": 827
+		},
+		{
+			"from": 827,
+			"to": 796
+		},
+		{
+			"from": 828,
+			"to": 791
+		},
+		{
+			"from": 828,
+			"to": 784
+		},
+		{
+			"from": 829,
+			"to": 796
+		},
+		{
+			"from": 830,
+			"to": 796
+		},
+		{
+			"from": 832,
+			"to": 788
+		},
+		{
+			"from": 836,
+			"to": 784
+		},
+		{
+			"from": 838,
+			"to": 836
+		},
+		{
+			"from": 839,
+			"to": 840
+		},
+		{
+			"from": 840,
+			"to": 796
+		},
+		{
+			"from": 840,
+			"to": 788
+		},
+		{
+			"from": 841,
+			"to": 843
+		},
+		{
+			"from": 841,
+			"to": 842
+		},
+		{
+			"from": 842,
+			"to": 788
+		},
+		{
+			"from": 843,
+			"to": 796
+		},
+		{
+			"from": 844,
+			"to": 788
+		},
+		{
+			"from": 844,
+			"to": 784
+		},
+		{
+			"from": 845,
+			"to": 830
+		},
+		{
+			"from": 846,
+			"to": 847
+		},
+		{
+			"from": 846,
+			"to": 799
+		},
+		{
+			"from": 847,
+			"to": 796
+		},
+		{
+			"from": 847,
+			"to": 784
+		},
+		{
+			"from": 847,
+			"to": 788
+		},
+		{
+			"from": 848,
+			"to": 850
+		},
+		{
+			"from": 850,
+			"to": 796
+		},
+		{
+			"from": 850,
+			"to": 779
+		},
+		{
+			"from": 850,
+			"to": 852
+		},
+		{
+			"from": 850,
+			"to": 851
+		},
+		{
+			"from": 852,
+			"to": 784
+		},
+		{
+			"from": 853,
+			"to": 854
+		},
+		{
+			"from": 854,
+			"to": 796
+		},
+		{
+			"from": 854,
+			"to": 779
+		},
+		{
+			"from": 854,
+			"to": 855
+		},
+		{
+			"from": 855,
+			"to": 786
+		},
+		{
+			"from": 856,
+			"to": 857
+		},
+		{
+			"from": 857,
+			"to": 796
+		},
+		{
+			"from": 857,
+			"to": 779
+		},
+		{
+			"from": 857,
+			"to": 858
+		},
+		{
+			"from": 859,
+			"to": 861
+		},
+		{
+			"from": 861,
+			"to": 862
+		},
+		{
+			"from": 862,
+			"to": 779
+		},
+		{
+			"from": 862,
+			"to": 796
+		},
+		{
+			"from": 862,
+			"to": 860
+		},
+		{
+			"from": 863,
+			"to": 864
+		},
+		{
+			"from": 863,
+			"to": 859
+		},
+		{
+			"from": 864,
+			"to": 860
+		},
+		{
+			"from": 864,
+			"to": 779
+		},
+		{
+			"from": 864,
+			"to": 796
+		},
+		{
+			"from": 864,
+			"to": 865
+		},
+		{
+			"from": 866,
+			"to": 867
+		},
+		{
+			"from": 867,
+			"to": 796
+		},
+		{
+			"from": 867,
+			"to": 868
+		},
+		{
+			"from": 867,
+			"to": 784
+		},
+		{
+			"from": 868,
+			"to": 886
+		},
+		{
+			"from": 869,
+			"to": 870
+		},
+		{
+			"from": 870,
+			"to": 796
+		},
+		{
+			"from": 870,
+			"to": 872
+		},
+		{
+			"from": 870,
+			"to": 871
+		},
+		{
+			"from": 871,
+			"to": 886
+		},
+		{
+			"from": 872,
+			"to": 886
+		},
+		{
+			"from": 873,
+			"to": 874
+		},
+		{
+			"from": 874,
+			"to": 796
+		},
+		{
+			"from": 874,
+			"to": 872
+		},
+		{
+			"from": 874,
+			"to": 871
+		},
+		{
+			"from": 875,
+			"to": 876
+		},
+		{
+			"from": 876,
+			"to": 877
+		},
+		{
+			"from": 876,
+			"to": 796
+		},
+		{
+			"from": 876,
+			"to": 872
+		},
+		{
+			"from": 876,
+			"to": 871
+		},
+		{
+			"from": 877,
+			"to": 784
+		},
+		{
+			"from": 878,
+			"to": 879
+		},
+		{
+			"from": 879,
+			"to": 880
+		},
+		{
+			"from": 879,
+			"to": 796
+		},
+		{
+			"from": 879,
+			"to": 871
+		},
+		{
+			"from": 879,
+			"to": 872
+		},
+		{
+			"from": 880,
+			"to": 788
+		},
+		{
+			"from": 881,
+			"to": 882
+		},
+		{
+			"from": 882,
+			"to": 796
+		},
+		{
+			"from": 882,
+			"to": 868
+		},
+		{
+			"from": 883,
+			"to": 884
+		},
+		{
+			"from": 884,
+			"to": 885
+		},
+		{
+			"from": 884,
+			"to": 796
+		},
+		{
+			"from": 884,
+			"to": 784
+		},
+		{
+			"from": 886,
+			"to": 887
+		},
+		{
+			"from": 887,
+			"to": 888
+		}
+	]
+}
+```
